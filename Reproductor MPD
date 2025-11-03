@@ -110,7 +110,7 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
     player.configure({
       drm:{ clearKeys },
       abr:{ enabled:true, defaultBandwidthEstimate:5000000 },
-      streaming:{ bufferingGoal:0.5, rebufferingGoal:0.5, lowLatencyMode:true, stallSkip:true, retryParameters:{maxAttempts:2} }
+      streaming:{ bufferingGoal:1, rebufferingGoal:5, lowLatencyMode:true, stallSkip:true, retryParameters:{maxAttempts:2} }
     });
 
     // Intro logo solo primera vez

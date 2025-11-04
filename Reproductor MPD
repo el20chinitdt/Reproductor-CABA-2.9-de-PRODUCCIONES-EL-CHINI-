@@ -98,7 +98,9 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
   const mpdUrl="https://el4live1.boldmss.com/LIFETIME/LIFETIME_EL4.isml/LIFETIME_EL4.mpd";
   const clearKeys={"decf9d08f51a4f9cb0b1ae58430a27a8":"88f75b9621953b1953825b02e0aafde2"};
 
-  shaka.polyfill.installAll();
+  // Polyfills explícito (no rompe nada, y lo hace explícito)
+  try{ shaka.polyfill.installAll(); }catch(e){ console.warn('shaka.polyfill.installAll falló', e); }
+
   if(!shaka.Player.isBrowserSupported()){
     errorMessage.textContent='Este navegador no soporta Shaka Player.';
     errorMessage.style.display='block';
@@ -107,10 +109,19 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
 
   try{
     const player=new shaka.Player(video);
+
+    // configuración base con buffering optimizado y preferencia ES
     player.configure({
       drm:{ clearKeys },
       abr:{ enabled:true, defaultBandwidthEstimate:5000000 },
-      streaming:{ bufferingGoal:1, rebufferingGoal:5, lowLatencyMode:true, stallSkip:true, retryParameters:{maxAttempts:2} }
+      streaming:{ 
+        bufferingGoal:1, 
+        rebufferingGoal:5, 
+        lowLatencyMode:true, 
+        stallSkip:true, 
+        retryParameters:{ maxAttempts:2, baseDelay:200, backoffFactor:1.7, fuzzFactor:0.25, timeout:6000 } 
+      },
+      preferredAudioLanguage: 'es' // intenta seleccionar ES automáticamente
     });
 
     // Intro logo solo primera vez
@@ -129,9 +140,10 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
 
     await player.load(mpdUrl);
 
+    // inicializar Plyr SIN opción de audio (no mostramos selector)
     const plyrInstance=new Plyr(video,{
       controls:['play-large','rewind','play','fast-forward','progress','current-time','mute','volume','settings','pip','fullscreen'],
-      settings:['quality','speed','loop'],
+      settings:['quality','speed','loop'], // sin 'audio'
       autoplay:true,
       keyboard:{ global:true }
     });
@@ -151,7 +163,6 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
         const dur = isFinite(video.duration) ? video.duration : Infinity; 
         video.currentTime = Math.max(0, Math.min((video.currentTime||0)+amount, dur)); 
       } catch(e){}
-
       seekFeedback.classList.remove('show'); 
       void seekFeedback.offsetWidth; 
       seekFeedback.classList.add('show'); 
@@ -159,10 +170,10 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
       seekFeedback._timeout = setTimeout(() => seekFeedback.classList.remove('show'), 700);
     }
 
-    // Audio boost
+    // Audio boost (salvo SmartTVs y plataformas específicas)
     try{
       const exclude=/SmartTV|Tizen|Web0S|WebOS|SmartHub|Chromecast|AppleTV|Roku|FireTV|AndroidTV|VIdaa|iPhone|iPad|iPod|Android/i;
-      if(!exclude.test(navigator.userAgent)){
+      if(!exclude.test(navigator.userAgent) && window.AudioContext){
         const audioCtx=new (window.AudioContext||window.webkitAudioContext)();
         const source=audioCtx.createMediaElementSource(video);
         const gainNode=audioCtx.createGain();
@@ -181,20 +192,66 @@ video#player { width:100%; height:100%; object-fit:cover; display:block; transit
     window.addEventListener('keydown',onFirstInteraction);
     window.addEventListener('touchstart',onFirstInteraction);
 
-    // Fullscreen landscape
+    // Fullscreen: forzar container a fullscreen y lock landscape donde sea posible
     plyrInstance.on('enterfullscreen',async()=>{
       try{ 
         if(container.requestFullscreen) await container.requestFullscreen();
         else if(container.webkitRequestFullscreen) await container.webkitRequestFullscreen();
         else if(container.msRequestFullscreen) await container.msRequestFullscreen();
+        if (screen.orientation && screen.orientation.lock) await screen.orientation.lock('landscape').catch(()=>{});
       }catch(e){}
     });
+    plyrInstance.on('exitfullscreen',async()=>{
+      try{ if (screen.orientation && screen.orientation.unlock) await screen.orientation.unlock().catch(()=>{}); }catch(e){}
+    });
 
+    // 🔊 Forzar español si hay múltiples pistas (sin selector visible)
+    // Se dispara cuando Shaka detecta cambios en pistas (tras el load típicamente)
+    player.addEventListener('trackschanged', () => {
+      try {
+        const variants = player.getVariantTracks();
+        if (!variants || variants.length === 0) return;
+
+        // Priorizar pistas que empiecen con 'es' (es, es-419, es-ES, etc)
+        const esTrack = variants.find(t => t.language && t.language.toLowerCase().startsWith('es'));
+        if (esTrack) {
+          // seleccionar idioma y variant track (true = clear buffer)
+          player.selectAudioLanguage('es');
+          player.selectVariantTrack(esTrack, true);
+          console.log('🎧 Audio forzado a Español (track selected):', esTrack);
+        } else {
+          console.log('No se encontró pista en español — continuará con la pista predeterminada.');
+        }
+      } catch (err) {
+        console.warn('Error al forzar audio español:', err);
+      }
+    });
+
+    // Manejo de errores Shaka
     player.addEventListener('error',evt=>{
       const err=evt.detail;
       console.error('Shaka error',err);
       errorMessage.textContent='Error de reproducción: '+(err&&err.message?err.message:'desconocido');
       errorMessage.style.display='block';
+    });
+
+    // Actualiza loading bar (simple demo: llena al canplay)
+    video.addEventListener('progress', () => {
+      try{
+        const bar=document.getElementById('loading-bar');
+        if(video.buffered.length){
+          const bufferedEnd = video.buffered.end(video.buffered.length-1);
+          const duration = video.duration || 1;
+          const pct = Math.min(100, (bufferedEnd / duration) * 100);
+          bar.style.width = pct + '%';
+        }
+      }catch(e){}
+    });
+
+    // Cuando empieza a tocar, oculta overlay si no lo hizo antes
+    video.addEventListener('playing', ()=>{
+      loadingOverlay.classList.add('hide');
+      introLogo.classList.remove('show');
     });
 
   }catch(err){
